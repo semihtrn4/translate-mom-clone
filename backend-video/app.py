@@ -19,6 +19,7 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError("SUPABASE_URL veya SUPABASE_SERVICE_KEY tanımlı değil.")
 
+# Supabase client oluştur
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 @app.route("/", methods=["GET"])
@@ -115,37 +116,33 @@ def render_subtitle():
         
         print("FFmpeg completed successfully")
 
-        # Supabase'e yükle (varsa önce sil)
+        # Supabase'e yükle
         storage_path = f"{user_id}/{output_name}"
         print(f"Uploading to Supabase: {storage_path}")
         
-        # ÖNCEKİ DOSYAYI SİL (HATA BURADA)
+        # Eski dosyayı sil (varsa)
         try:
-            # DOĞRU KULLANIM: from_() metodunu storage bucket'ına uygula
-            remove_response = supabase.storage.from_("processed-videos").remove([storage_path])
-            print(f"Existing file removal response: {remove_response}")
+            supabase.storage.from_("processed-videos").remove([storage_path])
+            print("Existing file removed")
         except Exception as e:
-            print(f"No existing file to remove (or error): {e}")
+            print(f"No existing file to remove: {e}")
 
-        # YENİ DOSYAYI YÜKLE
+        # Yeni dosyayı yükle
         with open(output_video, "rb") as f:
             video_data = f.read()
             print(f"Video file size: {len(video_data)} bytes")
             
-            # DOĞRU KULLANIM: from_() sonra upload()
-            upload_response = supabase.storage.from_("processed-videos").upload(
+            # Supabase 2.x upload syntax
+            supabase.storage.from_("processed-videos").upload(
                 path=storage_path,
                 file=video_data,
-                file_options={"content-type": "video/mp4", "upsert": "true"}
+                file_options={"content-type": "video/mp4"}
             )
-            print(f"Upload response: {upload_response}")
         
         print(f"Uploaded {len(video_data)} bytes to Supabase")
 
         # Public URL al
-        # DOĞRU KULLANIM: get_public_url() direkt path alır
-        public_url_data = supabase.storage.from_("processed-videos").get_public_url(storage_path)
-        public_url = public_url_data
+        public_url = supabase.storage.from_("processed-videos").get_public_url(storage_path)
         
         print(f"Final video URL: {public_url}")
 
