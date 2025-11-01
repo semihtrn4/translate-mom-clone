@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [
+      "https://deno.land/x/supabase@1.0.0/functions/types.d.ts"
+    ]
+    // Removed invalid lib entries that were causing the error
+  },
+  "include": [
+    "**/*.ts",
+    "deno-types.d.ts"
+  ]
+}

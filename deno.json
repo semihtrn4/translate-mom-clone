@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.unstable", "dom"]
+  },
+  "tasks": {},
+  "imports": {
+    "@/": "./src/",
+    "@/components/": "./src/components/",
+    "@/hooks/": "./src/hooks/",
+    "@/services/": "./src/services/",
+    "@/integrations/": "./src/integrations/",
+    "@/lib/": "./src/lib/",
+    "@/contexts/": "./src/contexts/",
+    "@/pages/": "./src/pages/"
+  }
+}
