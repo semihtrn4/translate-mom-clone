@@ -1,7 +1,7 @@
 import os
 import requests
 from flask import Flask, request, jsonify
-from supabase import create_client
+from supabase import create_client, Client
 import subprocess
 import tempfile
 
@@ -19,7 +19,7 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError("SUPABASE_URL veya SUPABASE_SERVICE_KEY tanımlı değil.")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -119,26 +119,34 @@ def render_subtitle():
         storage_path = f"{user_id}/{output_name}"
         print(f"Uploading to Supabase: {storage_path}")
         
+        # ÖNCEKİ DOSYAYI SİL (HATA BURADA)
         try:
-            supabase.storage.from_("processed-videos").remove([storage_path])
-            print("Existing file removed")
+            # DOĞRU KULLANIM: from_() metodunu storage bucket'ına uygula
+            remove_response = supabase.storage.from_("processed-videos").remove([storage_path])
+            print(f"Existing file removal response: {remove_response}")
         except Exception as e:
-            print(f"No existing file to remove: {e}")
+            print(f"No existing file to remove (or error): {e}")
 
+        # YENİ DOSYAYI YÜKLE
         with open(output_video, "rb") as f:
             video_data = f.read()
-            supabase.storage.from_("processed-videos").upload(
-                storage_path,
-                video_data,
-                {"contentType": "video/mp4", "upsert": True}
+            print(f"Video file size: {len(video_data)} bytes")
+            
+            # DOĞRU KULLANIM: from_() sonra upload()
+            upload_response = supabase.storage.from_("processed-videos").upload(
+                path=storage_path,
+                file=video_data,
+                file_options={"content-type": "video/mp4", "upsert": "true"}
             )
+            print(f"Upload response: {upload_response}")
         
         print(f"Uploaded {len(video_data)} bytes to Supabase")
 
         # Public URL al
-        public_url_response = supabase.storage.from_("processed-videos").get_public_url(storage_path)
-        public_url = public_url_response
-
+        # DOĞRU KULLANIM: get_public_url() direkt path alır
+        public_url_data = supabase.storage.from_("processed-videos").get_public_url(storage_path)
+        public_url = public_url_data
+        
         print(f"Final video URL: {public_url}")
 
         return jsonify({
@@ -147,8 +155,10 @@ def render_subtitle():
         })
 
     except subprocess.TimeoutExpired:
+        print("FFmpeg timeout error")
         return jsonify({"success": False, "error": "FFmpeg processing timeout"}), 500
     except requests.Timeout:
+        print("Download timeout error")
         return jsonify({"success": False, "error": "Download timeout"}), 500
     except Exception as e:
         print(f"Error in render_subtitle: {str(e)}")
