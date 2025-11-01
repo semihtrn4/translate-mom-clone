@@ -1,11 +1,10 @@
-import os, base64
+import os
+import requests
 from flask import Flask, request, jsonify
 from supabase import create_client
 import subprocess
+import tempfile
 
-# -----------------------------
-# Opsiyonel: .env dosyasını yükle
-# -----------------------------
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -14,119 +13,158 @@ except Exception:
 
 app = Flask(__name__)
 
-# -----------------------------
-# Supabase Client (güvenli)
-# -----------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise RuntimeError(
-        "SUPABASE_URL veya SUPABASE_SERVICE_KEY tanımlı değil. "
-        "Render dashboard veya .env dosyasından bu değerleri ekleyin."
-    )
+    raise RuntimeError("SUPABASE_URL veya SUPABASE_SERVICE_KEY tanımlı değil.")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# -----------------------------
-# ROUTES
-# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    """Ana sayfa — basit durum mesajı döner"""
     return """
     <h2>✅ Video Processing Backend Çalışıyor</h2>
     <p>Servis başarıyla ayakta.</p>
     <ul>
         <li><a href='/health'>/health</a> → Sağlık kontrolü</li>
-        <li>POST /process → FFmpeg işlem simülasyonu</li>
         <li>POST /render_subtitle → Video + altyazı birleştirme</li>
     </ul>
     """
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Sağlık kontrolü"""
     return jsonify({"status": "healthy", "service": "video-processing-backend"})
 
-@app.route("/process", methods=["POST"])
-def process():
-    """Simulated video processing endpoint."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-version"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return jsonify({
-            "status": "ok",
-            "message": "processing simulated",
-            "ffmpeg_version": result.stdout.splitlines()[0] if result.stdout else "unknown"
-        }), 200
-    except subprocess.CalledProcessError as e:
-        return jsonify({
-            "status": "error",
-            "message": f"FFmpeg failed: {e.stderr}"
-        }), 500
-    except FileNotFoundError:
-        return jsonify({
-            "status": "error",
-            "message": "FFmpeg bulunamadı. Sunucuda ffmpeg yüklü değil."
-        }), 500
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-# -----------------------------
-# Yeni Route: /render_subtitle
-# -----------------------------
 @app.route("/render_subtitle", methods=["POST"])
 def render_subtitle():
     """
-    Video + altyazı birleştirme işlemi (FFmpeg + Supabase upload)
+    Video + altyazı birleştirme işlemi
+    Expects: {video_url, subtitle_url, output_name, user_id}
     """
+    input_video = None
+    subtitle_file = None
+    output_video = None
+    
     try:
         data = request.get_json()
-        video_data = data["videoData"]
-        subtitle_data = data["subtitleData"]
+        
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data received"}), 400
+        
+        video_url = data.get("video_url")
+        subtitle_url = data.get("subtitle_url")
         output_name = data.get("output_name", "final.mp4")
         user_id = data.get("user_id", "anonymous")
 
-        # Byte array → dosya
-        input_video = "input.mp4"
-        subtitle_file = "subtitles.ass"
-        output_video = "output.mp4"
+        if not video_url or not subtitle_url:
+            return jsonify({"success": False, "error": "video_url and subtitle_url are required"}), 400
 
+        print(f"Processing video for user: {user_id}")
+        print(f"Video URL: {video_url}")
+        print(f"Subtitle URL: {subtitle_url}")
+
+        # Geçici dosyalar oluştur
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_video:
+            input_video = tmp_video.name
+        with tempfile.NamedTemporaryFile(suffix='.ass', delete=False) as tmp_sub:
+            subtitle_file = tmp_sub.name
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_out:
+            output_video = tmp_out.name
+
+        # Video'yu indir
+        print("Downloading video...")
+        video_response = requests.get(video_url, timeout=300)
+        if video_response.status_code != 200:
+            raise Exception(f"Failed to download video: HTTP {video_response.status_code}")
+        
         with open(input_video, "wb") as f:
-            f.write(bytes(video_data))
+            f.write(video_response.content)
+        print(f"Video downloaded: {len(video_response.content)} bytes")
+
+        # Subtitle'ı indir
+        print("Downloading subtitle...")
+        subtitle_response = requests.get(subtitle_url, timeout=60)
+        if subtitle_response.status_code != 200:
+            raise Exception(f"Failed to download subtitle: HTTP {subtitle_response.status_code}")
+        
         with open(subtitle_file, "wb") as f:
-            f.write(bytes(subtitle_data))
+            f.write(subtitle_response.content)
+        print(f"Subtitle downloaded: {len(subtitle_response.content)} bytes")
 
-        subprocess.run(["ffmpeg", "-y", "-i", input_video, "-vf", f"ass={subtitle_file}", "-c:a", "copy", output_video], check=True)
+        # FFmpeg ile subtitle'ı videoya yak
+        print("Running FFmpeg...")
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-i", input_video,
+            "-vf", f"ass={subtitle_file}",
+            "-c:a", "copy",
+            output_video
+        ]
+        
+        result = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+        
+        if result.returncode != 0:
+            print(f"FFmpeg stderr: {result.stderr}")
+            raise Exception(f"FFmpeg failed with code {result.returncode}: {result.stderr}")
+        
+        print("FFmpeg completed successfully")
 
+        # Supabase'e yükle (varsa önce sil)
+        storage_path = f"{user_id}/{output_name}"
+        print(f"Uploading to Supabase: {storage_path}")
+        
         try:
-            supabase.storage.from_("processed-videos").remove([f"{user_id}/{output_name}"])
-        except: pass
+            supabase.storage.from_("processed-videos").remove([storage_path])
+            print("Existing file removed")
+        except Exception as e:
+            print(f"No existing file to remove: {e}")
 
         with open(output_video, "rb") as f:
-            supabase.storage.from_("processed-videos").upload(f"{user_id}/{output_name}", f.read(), {"contentType":"video/mp4"})
+            video_data = f.read()
+            supabase.storage.from_("processed-videos").upload(
+                storage_path,
+                video_data,
+                {"contentType": "video/mp4", "upsert": True}
+            )
+        
+        print(f"Uploaded {len(video_data)} bytes to Supabase")
 
-        public_url = supabase.storage.from_("processed-videos").get_public_url(f"{user_id}/{output_name}").get("data", {}).get("publicUrl")
-        return jsonify({"success": True, "final_video_url": public_url})
+        # Public URL al
+        public_url_response = supabase.storage.from_("processed-videos").get_public_url(storage_path)
+        public_url = public_url_response
 
+        print(f"Final video URL: {public_url}")
+
+        return jsonify({
+            "success": True,
+            "final_video_url": public_url
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "FFmpeg processing timeout"}), 500
+    except requests.Timeout:
+        return jsonify({"success": False, "error": "Download timeout"}), 500
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
+        print(f"Error in render_subtitle: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        for f in ["input.mp4","subtitles.ass","output.mp4"]:
-            try: os.remove(f)
-            except: pass
+        # Geçici dosyaları temizle
+        for f in [input_video, subtitle_file, output_video]:
+            if f:
+                try:
+                    os.remove(f)
+                    print(f"Cleaned up: {f}")
+                except Exception as e:
+                    print(f"Failed to clean up {f}: {e}")
 
-# -----------------------------
-# WSGI Entry Point
-# -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
