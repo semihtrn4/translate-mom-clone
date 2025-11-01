@@ -33,8 +33,16 @@ def home():
     </ul>
     """
 
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "healthy", "service": "video-processing-backend"})
+
 @app.route("/render_subtitle", methods=["POST"])
 def render_subtitle():
+    """
+    Video + altyazı birleştirme işlemi (Memory Optimized)
+    Expects: {video_url, subtitle_url, output_name, user_id}
+    """
     input_video = None
     subtitle_file = None
     output_video = None
@@ -65,17 +73,16 @@ def render_subtitle():
         with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_out:
             output_video = tmp_out.name
 
-        # Video'yu indir
+        # Video'yu indir (STREAMING - memory efficient)
         print("Downloading video...")
         video_response = requests.get(video_url, timeout=300, stream=True)
         if video_response.status_code != 200:
             raise Exception(f"Failed to download video: HTTP {video_response.status_code}")
         
-        # STREAMING DOWNLOAD (memory tasarrufu)
         with open(input_video, "wb") as f:
             for chunk in video_response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"Video downloaded")
+        print("Video downloaded successfully")
 
         # Subtitle'ı indir
         print("Downloading subtitle...")
@@ -88,16 +95,17 @@ def render_subtitle():
         print(f"Subtitle downloaded: {len(subtitle_response.content)} bytes")
 
         # FFmpeg ile subtitle'ı videoya yak (MEMORY OPTIMIZED)
-        print("Running FFmpeg...")
+        print("Running FFmpeg with memory optimization...")
         ffmpeg_cmd = [
             "ffmpeg", "-y",
             "-i", input_video,
             "-vf", f"ass={subtitle_file}",
-            "-c:v", "libx264",          # Video codec
-            "-preset", "ultrafast",     # Hız öncelikli (daha az RAM)
-            "-crf", "28",               # Kalite (28 = düşük dosya boyutu)
-            "-c:a", "copy",             # Audio kopyala
+            "-c:v", "libx264",              # Video codec
+            "-preset", "ultrafast",         # Hız öncelikli (daha az RAM)
+            "-crf", "28",                   # Kalite (28 = düşük dosya boyutu)
+            "-c:a", "copy",                 # Audio kopyala
             "-max_muxing_queue_size", "1024",  # Buffer boyutu
+            "-threads", "1",                # Tek thread (daha az RAM)
             output_video
         ]
         
@@ -114,6 +122,21 @@ def render_subtitle():
         
         print("FFmpeg completed successfully")
 
+        # Input dosyalarını hemen sil (RAM serbest bırak)
+        try:
+            os.remove(input_video)
+            print("Input video cleaned up")
+            input_video = None
+        except Exception as e:
+            print(f"Failed to clean input video: {e}")
+
+        try:
+            os.remove(subtitle_file)
+            print("Subtitle file cleaned up")
+            subtitle_file = None
+        except Exception as e:
+            print(f"Failed to clean subtitle: {e}")
+
         # Supabase'e yükle
         storage_path = f"{user_id}/{output_name}"
         print(f"Uploading to Supabase: {storage_path}")
@@ -125,8 +148,8 @@ def render_subtitle():
         except Exception as e:
             print(f"No existing file to remove: {e}")
 
-        # STREAMING UPLOAD (memory tasarrufu)
-        print(f"Reading output video...")
+        # Output video'yu yükle
+        print("Reading output video...")
         with open(output_video, "rb") as f:
             video_data = f.read()
             print(f"Video file size: {len(video_data)} bytes")
@@ -161,7 +184,7 @@ def render_subtitle():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        # Geçici dosyaları HEMEN temizle (memory serbest bırak)
+        # Geçici dosyaları temizle
         for f in [input_video, subtitle_file, output_video]:
             if f:
                 try:
@@ -174,6 +197,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-```
-
-
